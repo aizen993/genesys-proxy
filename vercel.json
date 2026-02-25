@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "functions": {
+    "api/genesys.js": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/genesys",
+      "dest": "/api/genesys.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/genesys.js"
+    }
+  ]
+}

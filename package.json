@@ -1,0 +1,9 @@
+{
+  "name": "genesys-kpi-proxy",
+  "version": "1.0.0",
+  "description": "Genesys Cloud KPI proxy for Yousef Shtawi Command Hub",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}

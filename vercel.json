@@ -9,10 +9,6 @@
     {
       "src": "/api/genesys",
       "dest": "/api/genesys.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/api/genesys.js"
     }
   ]
 }

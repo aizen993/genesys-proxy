@@ -1,8 +1,8 @@
 {
   "name": "genesys-proxy",
-  "version": "2.0.0",
-  "description": "Genesys Cloud API proxy for Qmobility Command Hub",
+  "version": "3.0.0",
   "private": true,
+  "type": "module",
   "engines": {
     "node": ">=18"
   }

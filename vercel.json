@@ -4,11 +4,5 @@
     "api/genesys.js": {
       "maxDuration": 30
     }
-  },
-  "routes": [
-    {
-      "src": "/api/genesys",
-      "dest": "/api/genesys.js"
-    }
-  ]
+  }
 }

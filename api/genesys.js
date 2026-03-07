@@ -1,24 +1,26 @@
-// Genesys Cloud Proxy — Vercel Serverless Function
+// Genesys Cloud Proxy — Vercel Serverless Function (ESM)
 // Region: mypurecloud.de
-// Valid ConversationAggregateMetrics (verified from API error):
+// VALID ConversationAggregateMetrics for this region:
 //   nOffered, nConnected, nConversations, nBlindTransferred,
-//   nConsult, nConsultTransferred, nError, nOutbound
-//   tHandle, tTalk, tHeld, tAcw, tAnswered, tAbandoned (time-based = valid)
-// NOT valid: nAnswered, nAbandoned, nInServiceLevel (these 400 on this region)
+//   nConsult, nConsultTransferred, nError, nOutbound,
+//   tHandle, tTalk, tHeld, tAcw, tAnswered, tAbandoned
+// INVALID on this region: nAnswered, nAbandoned, nInServiceLevel
 
 const DEBUG = process.env.GENESYS_DEBUG === 'true';
 const DEFAULT_QUEUE_NAME = process.env.GENESYS_QUEUE_NAME || 'Qmobility_Queue';
 
-// Always log to Vercel console — visible in Dashboard → Logs
-function log(...a)  { console.log('[GENESYS]', ...a); }
+function log(...a)  { console.log('[GENESYS]',  ...a); }
 function dbg(...a)  { if (DEBUG) log(...a); }
-function err(...a)  { console.error('[GENESYS ERROR]', ...a); }
+function lerr(...a) { console.error('[GENESYS ERR]', ...a); }
 
-// ── Token cache ──────────────────────────────────────────────────────────────
+// ── Token cache ───────────────────────────────────────────────────────────────
 let _tok = { token: null, exp: 0 };
+
 function getRegion() {
-  return (process.env.GENESYS_REGION || '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return (process.env.GENESYS_REGION || '').trim()
+    .replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
+
 async function getToken() {
   if (_tok.token && Date.now() < _tok.exp - 30000) return _tok.token;
   const region = getRegion();
@@ -37,12 +39,11 @@ async function getToken() {
   const txt = await r.text();
   if (!r.ok) throw new Error(`OAuth ${r.status}: ${txt.slice(0, 300)}`);
   const d = JSON.parse(txt);
-  _tok.token = d.access_token;
-  _tok.exp   = Date.now() + (d.expires_in || 3600) * 1000;
+  _tok = { token: d.access_token, exp: Date.now() + (d.expires_in || 3600) * 1000 };
   return _tok.token;
 }
 
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
 async function gGet(path) {
   const token = await getToken();
   const url   = `https://api.${getRegion()}${path}`;
@@ -50,7 +51,7 @@ async function gGet(path) {
   const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!r.ok) {
     const e = await r.text();
-    err('GET ERR', path, r.status, e.slice(0, 500));
+    lerr('GET', path, r.status, e.slice(0, 500));
     throw new Error(`GET ${path} → ${r.status}: ${e.slice(0, 300)}`);
   }
   return r.json();
@@ -60,9 +61,8 @@ async function gPost(path, body) {
   const token   = await getToken();
   const url     = `https://api.${getRegion()}${path}`;
   const payload = JSON.stringify(body);
-  // Always log the exact payload — requirement #4
   log('POST', url);
-  log('PAYLOAD', payload);
+  log('PAYLOAD', payload.slice(0, 600));
   const r = await fetch(url, {
     method:  'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -70,37 +70,41 @@ async function gPost(path, body) {
   });
   const txt = await r.text();
   if (!r.ok) {
-    // Always log the full Genesys error — requirement #4
-    err('POST ERR', path, r.status, txt.slice(0, 1000));
+    lerr('POST', path, r.status, txt.slice(0, 1000));
     throw new Error(`POST ${path} → ${r.status}: ${txt.slice(0, 500)}`);
   }
   return JSON.parse(txt);
 }
 
-// ── Interval: local day in Asia/Dubai (UTC+4, no DST) ───────────────────────
+// ── Interval: local day in Dubai (UTC+4, no DST) ─────────────────────────────
 function buildInterval(q = {}) {
-  if (q.start && q.end) return `${q.start}/${q.end}`;
+  if (q.start && q.end) {
+    log('interval (override)', q.start, q.end);
+    return `${q.start}/${q.end}`;
+  }
   const tz      = q.timezone || 'Asia/Dubai';
   const dateStr = q.date || new Date().toLocaleDateString('en-CA', { timeZone: tz });
   const [y, m, d] = dateStr.split('-').map(Number);
-  const startUTC  = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - 4 * 3600000);
-  const endUTC    = new Date(startUTC.getTime() + 86400000 - 1);
-  const interval  = `${startUTC.toISOString()}/${endUTC.toISOString()}`;
-  log('interval', interval, 'for', dateStr, tz);
+  // Dubai = UTC+4, no DST
+  const startUTC = new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - 4 * 3600000);
+  const endUTC   = new Date(startUTC.getTime() + 86400000 - 1);
+  const interval = `${startUTC.toISOString()}/${endUTC.toISOString()}`;
+  log('interval (auto)', interval, 'for', dateStr, tz);
   return interval;
 }
 
-// ── Format seconds → "Xm Ys" ────────────────────────────────────────────────
+// ── fmt seconds → "Xm Ys" ─────────────────────────────────────────────────────
 function fmt(sec) {
   if (!sec || sec <= 0) return '0s';
-  const m = Math.floor(sec / 60), s = String(sec % 60).padStart(2, '0');
+  const m = Math.floor(sec / 60);
+  const s = String(sec % 60).padStart(2, '0');
   return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 
-// ── Queue resolver ────────────────────────────────────────────────────────────
+// ── Queue resolver ─────────────────────────────────────────────────────────────
 const _qCache = {};
 async function resolveQueue(queueId, queueName) {
-  const name = queueName || DEFAULT_QUEUE_NAME;
+  const name = (queueName || DEFAULT_QUEUE_NAME).trim();
   if (queueId) return { id: queueId, name };
   if (_qCache[name]) return _qCache[name];
   const data = await gGet(`/api/v2/routing/queues?pageSize=100&name=${encodeURIComponent(name)}`);
@@ -111,32 +115,30 @@ async function resolveQueue(queueId, queueName) {
   return _qCache[name];
 }
 
-// ── Normalize agent status ────────────────────────────────────────────────────
+// ── Status normalizer ─────────────────────────────────────────────────────────
 function normalizeStatus(sp, rs) {
   const r = (rs || '').toUpperCase();
   const p = (sp || '').toLowerCase();
   if (r === 'INTERACTING' || r === 'COMMUNICATING') return 'Interacting';
-  if (r === 'NOT_RESPONDING') return 'Not Responding';
+  if (r === 'NOT_RESPONDING')  return 'Not Responding';
   if (r === 'IDLE') return p === 'available' ? 'Available' : 'Idle';
-  if (p === 'available') return 'Available';
-  if (p.includes('break') || p.includes('pause')) return 'Break';
+  if (p === 'available')                               return 'Available';
+  if (p.includes('break') || p.includes('pause'))     return 'Break';
   if (p === 'busy')  return 'Busy';
   if (p === 'away')  return 'Away';
   if (p === 'meal')  return 'Meal';
-  return sp || 'Offline';
+  if (p === 'offline' || !sp)                          return 'Offline';
+  return sp;
 }
 
-// ── Aggregate parser: ALWAYS throws if Genesys rejects — no zero fallback ───
-// Returns { nOffered, nConnected, nAbandoned, performance{} }
-// Requirement #3: NO try/catch that silently replaces metrics with zeros
+// ── Parse aggregates — no silent zero fallback ─────────────────────────────────
 function parseAggregates(aggData) {
-  // aggData must be the real Genesys response — caller owns error handling
   let nOffered = 0, nConnected = 0;
   let handleSum = 0, handleCnt = 0;
   let talkSum   = 0, talkCnt   = 0;
   let holdSum   = 0, holdCnt   = 0;
   let acwSum    = 0, acwCnt    = 0;
-  let waitSum   = 0, waitCnt   = 0;  // tAnswered = total ring/wait time → ASA
+  let waitSum   = 0, waitCnt   = 0;
 
   (aggData.results || []).forEach(r => {
     (r.data || []).forEach(d => {
@@ -152,40 +154,45 @@ function parseAggregates(aggData) {
     });
   });
 
-  const nAbandoned    = Math.max(0, nOffered - nConnected);
-  const avgHandleSec  = handleCnt > 0 ? Math.round(handleSum / handleCnt / 1000) : 0;
-  const avgTalkSec    = talkCnt   > 0 ? Math.round(talkSum   / talkCnt   / 1000) : 0;
-  const avgHoldSec    = holdCnt   > 0 ? Math.round(holdSum   / holdCnt   / 1000) : 0;
-  const avgAcwSec     = acwCnt    > 0 ? Math.round(acwSum    / acwCnt    / 1000) : 0;
-  const asaSec        = waitCnt   > 0 ? Math.round(waitSum   / waitCnt   / 1000) : 0;
+  const nAbandoned   = Math.max(0, nOffered - nConnected);
+  const avgHandleSec = handleCnt > 0 ? Math.round(handleSum / handleCnt / 1000) : 0;
+  const avgTalkSec   = talkCnt   > 0 ? Math.round(talkSum   / talkCnt   / 1000) : 0;
+  const avgHoldSec   = holdCnt   > 0 ? Math.round(holdSum   / holdCnt   / 1000) : 0;
+  const avgAcwSec    = acwCnt    > 0 ? Math.round(acwSum    / acwCnt    / 1000) : 0;
+  const asaSec       = waitCnt   > 0 ? Math.round(waitSum   / waitCnt   / 1000) : 0;
 
-  const performance = {
+  log('parseAggregates →', { nOffered, nConnected, nAbandoned, avgHandleSec, asaSec });
+
+  return {
     offered:    nOffered,
     answered:   nConnected,
     abandoned:  nAbandoned,
     answerPct:  nOffered > 0 ? parseFloat((nConnected / nOffered * 100).toFixed(1)) : 0,
     abandonPct: nOffered > 0 ? parseFloat((nAbandoned / nOffered * 100).toFixed(1)) : 0,
-    asaSec,     asaFmt:       fmt(asaSec),
-    serviceLevelPct: null,        // oServiceLevel is not valid in this region
-    avgHandleSec,   avgHandleFmt: fmt(avgHandleSec),
-    avgTalkSec,     avgTalkFmt:   fmt(avgTalkSec),
-    avgHoldSec,     avgHoldFmt:   fmt(avgHoldSec),
-    avgAcwSec,      avgAcwFmt:    fmt(avgAcwSec),
-    // Legacy aliases — keep so old frontend code still works
-    avgAHT: avgHandleSec, avgHandle: avgHandleSec,
-    avgASA: asaSec, avgWaitSec: asaSec, avgTalk: avgTalkSec,
+    asaSec,       asaFmt:       fmt(asaSec),
+    serviceLevelPct: null,
+    avgHandleSec, avgHandleFmt: fmt(avgHandleSec),
+    avgTalkSec,   avgTalkFmt:   fmt(avgTalkSec),
+    avgHoldSec,   avgHoldFmt:   fmt(avgHoldSec),
+    avgAcwSec,    avgAcwFmt:    fmt(avgAcwSec),
+    // legacy aliases
+    avgAHT:     avgHandleSec,
+    avgHandle:  avgHandleSec,
+    avgASA:     asaSec,
+    avgWaitSec: asaSec,
+    avgTalk:    avgTalkSec,
     abandonRate: nOffered > 0 ? parseFloat((nAbandoned / nOffered * 100).toFixed(1)) : 0,
   };
-
-  log('parseAggregates →', JSON.stringify({
-    nOffered, nConnected, nAbandoned, avgHandleSec, asaSec,
-    rawResults: (aggData.results || []).length
-  }));
-
-  return performance;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+// ── VALID observation metrics for this region ─────────────────────────────────
+const OBS_METRICS = [
+  'oOnQueueUsers', 'oOffQueueUsers', 'oInteracting',
+  'oAlerting', 'oLongestWaiting', 'oLongestInteracting', 'oMemberUsers',
+];
+// NOTE: oWaiting is NOT valid on mypurecloud.de — use oOnQueueUsers for queue depth
+
+// ── Handler ───────────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -195,15 +202,14 @@ export default async function handler(req, res) {
   const endpoint = (req.query.endpoint || req.query.action || '').trim();
   log('REQUEST endpoint:', endpoint, 'query:', JSON.stringify(req.query));
 
-  // Requirement #1 / #2: hard 500 with full details — NO silent zero fallbacks
   const fail = (status, error, details = '') => {
-    err('FAIL', status, error, details);
+    lerr('FAIL', status, error, details);
     return res.status(status).json({ ok: false, error, details, endpoint, status });
   };
 
   try {
 
-    // ── health ──────────────────────────────────────────────────────────────
+    // ── health ────────────────────────────────────────────────────────────────
     if (!endpoint || endpoint === 'health') {
       const token = await getToken();
       return res.json({
@@ -212,7 +218,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // ── presence / users ────────────────────────────────────────────────────
+    // ── presence ──────────────────────────────────────────────────────────────
     if (endpoint === 'presence' || endpoint === 'users') {
       let all = [], page = 1;
       while (true) {
@@ -220,14 +226,14 @@ export default async function handler(req, res) {
           `/api/v2/users?pageSize=100&pageNumber=${page}&expand=presence,routingStatus&active=true`
         );
         all = all.concat(d.entities || []);
-        if (!d.nextUri || all.length >= (d.total || 0) || ++page > 5) break;
+        if (!d.nextUri || all.length >= (d.total || 0) || ++page > 10) break;
       }
       const users = all.map(u => {
         const sp         = u.presence?.presenceDefinition?.systemPresence || 'Offline';
         const rs         = u.routingStatus?.status || null;
         const normalized = normalizeStatus(sp, rs);
         return {
-          id: u.id, name: u.name, email: u.email || '',
+          id: u.id, name: u.name, email: (u.email || '').toLowerCase(),
           presence: sp, presenceLabel: u.presence?.presenceDefinition?.name || sp,
           routingStatus: rs, normalized,
           isOnline:  normalized !== 'Offline',
@@ -238,7 +244,7 @@ export default async function handler(req, res) {
       return res.json({ ok: true, users });
     }
 
-    // ── queue_activity (live observations) ──────────────────────────────────
+    // ── queue_activity ────────────────────────────────────────────────────────
     if (endpoint === 'queue_activity' || endpoint === 'queue_obs') {
       const queue = await resolveQueue(req.query.queueId, req.query.queueName);
       const data  = await gPost('/api/v2/analytics/queues/observations/query', {
@@ -246,24 +252,23 @@ export default async function handler(req, res) {
           type: 'or',
           predicates: [{ type: 'dimension', dimension: 'queueId', operator: 'matches', value: queue.id }],
         },
-        metrics: [
-          'oOnQueueUsers', 'oOffQueueUsers', 'oInteracting',
-          'oAlerting', 'oLongestWaiting', 'oLongestInteracting', 'oMemberUsers',
-        ],
+        metrics: OBS_METRICS,
       });
 
       const m = {};
       (data.results?.[0]?.data || []).forEach(d => { m[d.metric] = d.stats; });
 
+      // oWaiting is NOT valid on this region — use oOnQueueUsers for queue depth
+      // oInteracting = active conversations (agents currently on calls)
       const live = {
-        waiting:         m.oInteracting?.count    || 0,
-        interactions:    m.oInteracting?.count    || 0,
-        alerting:        m.oAlerting?.count       || 0,
-        onQueue:         m.oOnQueueUsers?.count   || 0,
-        offQueue:        m.oOffQueueUsers?.count  || 0,
-        onQueueCount:    m.oOnQueueUsers?.count   || 0,
-        interacting:     m.oInteracting?.count    || 0,
-        longestWaiting:  m.oLongestWaiting?.count || 0,
+        waiting:         m.oOnQueueUsers?.count  || 0,  // callers waiting in queue
+        interactions:    m.oInteracting?.count   || 0,  // active interactions
+        alerting:        m.oAlerting?.count      || 0,  // ringing
+        onQueue:         m.oOnQueueUsers?.count  || 0,
+        offQueue:        m.oOffQueueUsers?.count || 0,
+        onQueueCount:    m.oOnQueueUsers?.count  || 0,
+        interacting:     m.oInteracting?.count   || 0,
+        longestWaiting:  m.oLongestWaiting?.max  || m.oLongestWaiting?.count || 0,
         serviceLevelLive: null,
       };
 
@@ -272,19 +277,16 @@ export default async function handler(req, res) {
         queue:    { id: queue.id, name: queue.name },
         interval: 'live',
         live,
-        // legacy compat
-        queues:          [{ ...live, queueId: queue.id, waiting: live.onQueueCount }],
-        totalWaiting:    live.onQueueCount,
+        totalWaiting:     live.waiting,
         totalInteracting: live.interacting,
       });
     }
 
-    // ── queue_performance ────────────────────────────────────────────────────
-    // Requirement #1: returns real payload OR hard 500 — no zero fallback
+    // ── queue_performance ─────────────────────────────────────────────────────
     if (endpoint === 'queue_performance' || endpoint === 'calls_today') {
       const interval = buildInterval(req.query);
       const queue    = await resolveQueue(req.query.queueId, req.query.queueName);
-      log('queue_performance interval:', interval, 'queue:', queue.id);
+      log('queue_performance', interval, queue.id);
 
       const aggQuery = {
         interval,
@@ -296,13 +298,12 @@ export default async function handler(req, res) {
             { type: 'dimension', dimension: 'mediaType', operator: 'matches', value: 'voice'  },
           ],
         },
-        // ONLY metrics valid for mypurecloud.de — no nAnswered, no nAbandoned
         metrics: ['nOffered', 'nConnected', 'tHandle', 'tTalk', 'tHeld', 'tAcw', 'tAnswered'],
         flattenMultivaluedDimensions: true,
       };
 
-      // Requirement #3: gPost throws on Genesys error — we do NOT catch it here
-      // The outer try/catch will return a real 500 with the Genesys error message
+      // Aggregate fails hard (requirement: no silent zeros)
+      // Observations failure is non-fatal
       const [aggData, obsData] = await Promise.all([
         gPost('/api/v2/analytics/conversations/aggregates/query', aggQuery),
         gPost('/api/v2/analytics/queues/observations/query', {
@@ -310,33 +311,30 @@ export default async function handler(req, res) {
             type: 'or',
             predicates: [{ type: 'dimension', dimension: 'queueId', operator: 'matches', value: queue.id }],
           },
-          metrics: ['oOnQueueUsers', 'oInteracting', 'oAlerting', 'oLongestWaiting'],
-        // observations failure is non-fatal — we still want performance data
-        }).catch(e => { err('obs query failed (non-fatal):', e.message); return { results: [] }; }),
+          metrics: OBS_METRICS,
+        }).catch(e => { lerr('obs non-fatal:', e.message); return { results: [] }; }),
       ]);
 
-      // parseAggregates reads the real data — no zeros unless Genesys returned none
       const performance = parseAggregates(aggData);
 
-      // Live waiting count from obs (non-fatal if missing)
-      let currentWaiting = 0;
-      (obsData.results?.[0]?.data || []).forEach(d => {
-        if (d.metric === 'oInteracting') currentWaiting = d.stats?.count || 0;
-      });
+      const om = {};
+      (obsData.results?.[0]?.data || []).forEach(d => { om[d.metric] = d.stats; });
+      performance.currentWaiting = om.oOnQueueUsers?.count || 0;
 
       return res.json({
         ok: true,
         queue:    { id: queue.id, name: queue.name },
         interval,
-        performance: { ...performance, currentWaiting },
+        performance,
       });
     }
 
-    // ── agent_performance ────────────────────────────────────────────────────
+    // ── agent_performance ─────────────────────────────────────────────────────
+    // Fix: merge ALL active users with aggregate results so zero-call agents appear
     if (endpoint === 'agent_performance' || endpoint === 'agent_kpis') {
       const interval = buildInterval(req.query);
       const queue    = await resolveQueue(req.query.queueId, req.query.queueName);
-      log('agent_performance interval:', interval, 'queue:', queue.id);
+      log('agent_performance', interval, queue.id);
 
       const aggQuery = {
         interval,
@@ -357,40 +355,74 @@ export default async function handler(req, res) {
         gGet('/api/v2/users?pageSize=200&active=true&expand=presence,routingStatus'),
       ]);
 
+      // Build presence map for all active users
       const userMap = {};
       (presData.entities || []).forEach(u => {
         const sp = u.presence?.presenceDefinition?.systemPresence || 'Offline';
         const rs = u.routingStatus?.status || null;
         userMap[u.id] = {
-          name: u.name, presence: normalizeStatus(sp, rs),
-          routingStatus: rs, loginTime: u.presence?.modifiedDate || null,
+          name:          u.name,
+          email:        (u.email || '').toLowerCase(),
+          presence:      normalizeStatus(sp, rs),
+          routingStatus: rs,
+          loginTime:     u.presence?.modifiedDate || null,
+          isCC:          rs !== null,
         };
       });
 
-      // Requirement #5: agents is always an array
-      const agents = [];
+      // Build aggregate map indexed by userId
+      const aggMap = {};
       (aggData.results || []).forEach(r => {
         const userId = r.group?.userId;
         if (!userId) return;
         const m = {};
         (r.data || []).forEach(d => { m[d.metric] = d.stats; });
+        aggMap[userId] = m;
+      });
 
+      // Merge: return ALL users who are either isCC or have aggregate data
+      const agents = [];
+      const seenIds = new Set();
+
+      // First: users with aggregate data
+      Object.entries(aggMap).forEach(([userId, m]) => {
+        seenIds.add(userId);
+        const user         = userMap[userId] || {};
         const handled      = m.nConnected?.count || 0;
         const avgHandleSec = m.tHandle?.count > 0 ? Math.round((m.tHandle.sum || 0) / m.tHandle.count / 1000) : 0;
         const avgTalkSec   = m.tTalk?.count   > 0 ? Math.round((m.tTalk.sum   || 0) / m.tTalk.count   / 1000) : 0;
         const avgHoldSec   = m.tHeld?.count   > 0 ? Math.round((m.tHeld.sum   || 0) / m.tHeld.count   / 1000) : 0;
         const avgAcwSec    = m.tAcw?.count    > 0 ? Math.round((m.tAcw.sum    || 0) / m.tAcw.count    / 1000) : 0;
-        const user         = userMap[userId] || {};
 
         agents.push({
-          id: userId, name: user.name || userId,
+          id: userId, name: user.name || userId, email: user.email || '',
           answered: handled, handled,
           avgHandleSec, avgHandleFmt: fmt(avgHandleSec),
           avgAHT_sec:   avgHandleSec, avgAHT_fmt: fmt(avgHandleSec),
-          avgTalkSec,   avgTalkFmt:   fmt(avgTalkSec),   talkSec: avgTalkSec,
-          avgHoldSec,   avgHoldFmt:   fmt(avgHoldSec),   holdSec: avgHoldSec,
+          avgTalkSec,   avgTalkFmt:   fmt(avgTalkSec),  talkSec: avgTalkSec,
+          avgHoldSec,   avgHoldFmt:   fmt(avgHoldSec),  holdSec: avgHoldSec,
           holdCount:    m.tHeld?.count || 0,
-          avgAcwSec,    avgAcwFmt:    fmt(avgAcwSec),    acwSec: avgAcwSec,
+          avgAcwSec,    avgAcwFmt:    fmt(avgAcwSec),   acwSec: avgAcwSec,
+          transferCount:   0,
+          routingStatus:   user.routingStatus || null,
+          presence:        user.presence || 'Offline',
+          loginTime:       user.loginTime || null,
+        });
+      });
+
+      // Second: CC users with no aggregate data (zero-call agents)
+      Object.entries(userMap).forEach(([userId, user]) => {
+        if (seenIds.has(userId)) return;
+        if (!user.isCC) return;  // only include queue agents, not all Genesys users
+        agents.push({
+          id: userId, name: user.name, email: user.email || '',
+          answered: 0, handled: 0,
+          avgHandleSec: 0, avgHandleFmt: '0s',
+          avgAHT_sec:   0, avgAHT_fmt:   '0s',
+          avgTalkSec:   0, avgTalkFmt:   '0s', talkSec: 0,
+          avgHoldSec:   0, avgHoldFmt:   '0s', holdSec: 0,
+          holdCount:    0,
+          avgAcwSec:    0, avgAcwFmt:    '0s', acwSec: 0,
           transferCount:   0,
           routingStatus:   user.routingStatus || null,
           presence:        user.presence || 'Offline',
@@ -399,24 +431,22 @@ export default async function handler(req, res) {
       });
 
       agents.sort((a, b) => b.handled - a.handled);
-      log('agent_performance:', agents.length, 'agents');
+      log('agent_performance:', agents.length, 'agents (incl. zero-call)');
 
-      // Requirement #5: always return agents as array
       return res.json({
         ok: true,
         queue:    { id: queue.id, name: queue.name },
         interval,
-        agents,   // always Array — frontend does: Array.isArray(data.agents) ? data.agents : []
+        agents,
       });
     }
 
-    // ── dashboard_summary ────────────────────────────────────────────────────
-    // Requirement #7: returns { ok, queue, interval, users, live, performance }
-    // Requirement #2: does NOT mask performance failures
+    // ── dashboard_summary ─────────────────────────────────────────────────────
+    // Returns: { ok, queue, interval, users, live, performance }
     if (endpoint === 'dashboard_summary') {
       const interval = buildInterval(req.query);
       const queue    = await resolveQueue(req.query.queueId, req.query.queueName);
-      log('dashboard_summary interval:', interval, 'queue:', queue.id);
+      log('dashboard_summary', interval, queue.id);
 
       const aggQuery = {
         interval,
@@ -432,33 +462,26 @@ export default async function handler(req, res) {
         flattenMultivaluedDimensions: true,
       };
 
-      // presence + obs failures are non-fatal; aggregate failure IS fatal (no zero masking)
+      // presence + obs: non-fatal; aggregate: fatal
       const [presData, aggData, obsData] = await Promise.all([
         gGet('/api/v2/users?pageSize=200&active=true&expand=presence,routingStatus')
-          .catch(e => { err('presence failed (non-fatal):', e.message); return { entities: [] }; }),
-
-        // Requirement #2: aggregate query NOT wrapped in .catch() — throws on failure
+          .catch(e => { lerr('presence non-fatal:', e.message); return { entities: [] }; }),
         gPost('/api/v2/analytics/conversations/aggregates/query', aggQuery),
-
         gPost('/api/v2/analytics/queues/observations/query', {
           filter: {
             type: 'or',
             predicates: [{ type: 'dimension', dimension: 'queueId', operator: 'matches', value: queue.id }],
           },
-          metrics: [
-            'oOnQueueUsers', 'oOffQueueUsers', 'oInteracting',
-            'oAlerting', 'oLongestWaiting', 'oLongestInteracting', 'oMemberUsers',
-          ],
-        }).catch(e => { err('observations failed (non-fatal):', e.message); return { results: [] }; }),
+          metrics: OBS_METRICS,
+        }).catch(e => { lerr('obs non-fatal:', e.message); return { results: [] }; }),
       ]);
 
-      // Users
       const users = (presData.entities || []).map(u => {
         const sp         = u.presence?.presenceDefinition?.systemPresence || 'Offline';
         const rs         = u.routingStatus?.status || null;
         const normalized = normalizeStatus(sp, rs);
         return {
-          id: u.id, name: u.name, email: u.email || '',
+          id: u.id, name: u.name, email: (u.email || '').toLowerCase(),
           presence: sp, presenceLabel: u.presence?.presenceDefinition?.name || sp,
           routingStatus: rs, normalized,
           isOnline:  normalized !== 'Offline',
@@ -467,36 +490,34 @@ export default async function handler(req, res) {
         };
       });
 
-      // Performance — parseAggregates reads real data; outer try/catch handles 500
       const performance = parseAggregates(aggData);
 
-      // Live observations
       const om = {};
       (obsData.results?.[0]?.data || []).forEach(d => { om[d.metric] = d.stats; });
       const live = {
-        waiting:         om.oInteracting?.count   || 0,
+        waiting:         om.oOnQueueUsers?.count  || 0,
         interactions:    om.oInteracting?.count   || 0,
+        alerting:        om.oAlerting?.count      || 0,
         onQueue:         om.oOnQueueUsers?.count  || 0,
         offQueue:        om.oOffQueueUsers?.count || 0,
-        interacting:     om.oInteracting?.count   || 0,
-        alerting:        om.oAlerting?.count      || 0,
         onQueueCount:    om.oOnQueueUsers?.count  || 0,
-        longestWaiting:  om.oLongestWaiting?.count || 0,
-        serviceLevelLive: null,  // oServiceLevel not valid in this region
+        interacting:     om.oInteracting?.count   || 0,
+        longestWaiting:  om.oLongestWaiting?.max  || om.oLongestWaiting?.count || 0,
+        serviceLevelLive: null,
       };
+      performance.currentWaiting = live.waiting;
 
-      // Requirement #7: exact shape { ok, queue, interval, users, live, performance }
       return res.json({
         ok: true,
         queue:    { id: queue.id, name: queue.name },
         interval,
         users,
         live,
-        performance: { ...performance, currentWaiting: live.interactions },
+        performance,
       });
     }
 
-    // ── adherence ────────────────────────────────────────────────────────────
+    // ── adherence ─────────────────────────────────────────────────────────────
     if (endpoint === 'adherence') {
       const userIds = req.query.userIds ? req.query.userIds.split(',') : [];
       if (!userIds.length) return fail(400, 'Pass ?userIds=id1,id2');
@@ -508,8 +529,8 @@ export default async function handler(req, res) {
       'Valid: health, presence, queue_activity, queue_performance, agent_performance, dashboard_summary, adherence');
 
   } catch (e) {
-    // Requirement #1: hard 500 with FULL error detail — no masking
-    err('UNHANDLED', endpoint, e.message);
-    return fail(500, e.message, `endpoint=${endpoint} — check Vercel function logs for full payload/response`);
+    lerr('UNHANDLED', endpoint, e.message);
+    return fail(500, e.message,
+      `endpoint=${endpoint} — see Vercel function logs for full payload/response`);
   }
 }

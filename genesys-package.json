@@ -4,7 +4,5 @@
   "description": "Genesys Cloud API proxy for Qmobility Command Hub",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=18"
-  }
+  "engines": { "node": ">=18" }
 }

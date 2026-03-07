@@ -161,30 +161,26 @@ export default async function handler(req, res) {
       const queue = await resolveQueue(req.query.queueId, req.query.queueName);
       const data = await gPost('/api/v2/analytics/queues/observations/query', {
         filter: { type: 'or', predicates: [{ type: 'dimension', dimension: 'queueId', operator: 'matches', value: queue.id }] },
-        metrics: ['oWaiting', 'oInteracting', 'oAlerting', 'oOnQueueUsers', 'oOffQueueUsers',
-                  'oIdleAgents', 'oNotRespondingAgents', 'oCommunicatingAgents',
-                  'oInteractingAgents', 'oAvailableAgents', 'oServiceLevel'],
+        metrics: ['oOnQueueUsers', 'oOffQueueUsers', 'oInteracting', 'oAlerting', 'oLongestWaiting', 'oLongestInteracting', 'oMemberUsers'],
       });
       const m = {};
       (data.results?.[0]?.data || []).forEach(d => { m[d.metric] = d.stats; });
-      const slRaw = m.oServiceLevel?.pct ?? m.oServiceLevel?.ratio ?? null;
       const live = {
-        waiting: m.oWaiting?.count || 0,
+        waiting: m.oInteracting?.count || 0,
         interactions: m.oInteracting?.count || 0,
         alerting: m.oAlerting?.count || 0,
         onQueue: m.oOnQueueUsers?.count || 0,
         offQueue: m.oOffQueueUsers?.count || 0,
-        idle: m.oIdleAgents?.count || 0,
-        communicating: m.oCommunicatingAgents?.count || 0,
-        interacting: m.oInteractingAgents?.count || 0,
-        notResponding: m.oNotRespondingAgents?.count || 0,
-        available: m.oAvailableAgents?.count || 0,
-        serviceLevelLive: slRaw != null ? (slRaw <= 1 ? Math.round(slRaw * 100) : Math.round(slRaw)) : null,
+        onQueueCount: m.oOnQueueUsers?.count || 0,
+        interacting: m.oInteracting?.count || 0,
+        alerting: m.oAlerting?.count || 0,
+        longestWaiting: m.oLongestWaiting?.count || 0,
+        serviceLevelLive: null,
       };
       // legacy compat
       return res.json({ ok: true, queue: { id: queue.id, name: queue.name }, interval: 'live', live,
-        queues: [{ ...live, queueId: queue.id, waiting: live.waiting, interacting: live.interactions, serviceLevel: live.serviceLevelLive }],
-        totalWaiting: live.waiting, totalInteracting: live.interactions });
+        queues: [{ ...live, queueId: queue.id, waiting: live.onQueueCount, interacting: live.interacting, serviceLevel: null }],
+        totalWaiting: live.onQueueCount, totalInteracting: live.interacting });
     }
 
     // ── queue_performance & calls_today ──────────────────────────────────────
@@ -214,7 +210,7 @@ export default async function handler(req, res) {
         }),
         gPost('/api/v2/analytics/queues/observations/query', {
           filter: { type: 'or', predicates: [{ type: 'dimension', dimension: 'queueId', operator: 'matches', value: queue.id }] },
-          metrics: ['oWaiting', 'oServiceLevel'],
+          metrics: ['oOnQueueUsers', 'oInteracting', 'oAlerting', 'oLongestWaiting'],
         }).catch(() => ({ results: [] })),
       ]);
 
@@ -246,11 +242,8 @@ export default async function handler(req, res) {
       // SL from live observations
       let slPct = null, currentWaiting = 0;
       (obsData.results?.[0]?.data || []).forEach(d => {
-        if (d.metric === 'oWaiting') currentWaiting = d.stats?.count || 0;
-        if (d.metric === 'oServiceLevel') {
-          const v = d.stats?.pct ?? d.stats?.ratio ?? null;
-          if (v != null) slPct = v <= 1 ? parseFloat((v * 100).toFixed(1)) : parseFloat(v.toFixed(1));
-        }
+        if (d.metric === 'oInteracting') currentWaiting = d.stats?.count || 0;
+        // oServiceLevel not valid in this region
       });
 
       const performance = {
@@ -360,9 +353,7 @@ export default async function handler(req, res) {
         }),
         gPost('/api/v2/analytics/queues/observations/query', {
           filter: { type: 'or', predicates: [{ type: 'dimension', dimension: 'queueId', operator: 'matches', value: queue.id }] },
-          metrics: ['oWaiting','oInteracting','oAlerting','oOnQueueUsers','oOffQueueUsers',
-                    'oIdleAgents','oNotRespondingAgents','oCommunicatingAgents',
-                    'oInteractingAgents','oAvailableAgents','oServiceLevel'],
+          metrics: ['oOnQueueUsers', 'oOffQueueUsers', 'oInteracting', 'oAlerting', 'oLongestWaiting', 'oLongestInteracting', 'oMemberUsers'],
         }),
       ]);
 
@@ -400,19 +391,18 @@ export default async function handler(req, res) {
       // Live obs
       const om={};
       (obsData.results?.[0]?.data||[]).forEach(d=>{om[d.metric]=d.stats;});
-      const slRaw=om.oServiceLevel?.pct??om.oServiceLevel?.ratio??null;
-      const slPct=slRaw!=null?(slRaw<=1?parseFloat((slRaw*100).toFixed(1)):parseFloat(slRaw.toFixed(1))):null;
+      const slPct=null; // oServiceLevel not a valid QueueObservationMetric
       const live={
-        waiting:      om.oWaiting?.count||0,
+        waiting:      om.oInteracting?.count||0,
         interactions: om.oInteracting?.count||0,
         onQueue:      om.oOnQueueUsers?.count||0,
         offQueue:     om.oOffQueueUsers?.count||0,
-        idle:         om.oIdleAgents?.count||0,
-        communicating:om.oCommunicatingAgents?.count||0,
-        interacting:  om.oInteractingAgents?.count||0,
-        notResponding:om.oNotRespondingAgents?.count||0,
-        available:    om.oAvailableAgents?.count||0,
-        serviceLevelLive: slPct,
+        idle:         0,
+        communicating:0,
+        interacting:  om.oInteracting?.count||0,
+        notResponding:0,
+        available:    0,
+        serviceLevelLive: null,
       };
 
       const summary={
@@ -427,7 +417,7 @@ export default async function handler(req, res) {
         // legacy aliases
         avgAHT:avgHandleSec, avgHandle:avgHandleSec, avgASA:asaSec,
         avgWaitSec:asaSec, avgTalk:avgTalkSec, abandonRate:nOffered>0?parseFloat((nAbandoned/nOffered*100).toFixed(1)):0,
-        currentWaiting:live.waiting,
+        currentWaiting:live.interactions,
       };
 
       return res.json({ ok:true, queue:{id:queue.id,name:queue.name}, interval, users, live, summary, performance:summary, cards:summary });
